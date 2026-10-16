@@ -42,10 +42,28 @@ ARN が変わったら Backend もデプロイし直す。
 
 ## モデルの切り替え
 
-最初のモデルは `us.anthropic.claude-sonnet-4-6`（構築時にこのアカウントで使えた Sonnet 系の最新。5 系の推論プロファイルは一覧に出るが、呼ぶと「not available for this account」になった）。
+いまのモデルは `us.anthropic.claude-sonnet-4-6`。切り替えるときは設定値を変える。
 
 ```sh
 AWS_PROFILE=touring aws ssm put-parameter --region us-east-1 --name /trv2/dev/agent-model-id --type String --overwrite --value <推論プロファイルの ID>
 ```
 
 60秒以内に反映される。切り替えたら `scripts/smoke.py` で通ることを確かめる。
+
+## 課題
+
+### Claude 5 系のモデルを使えない（2026-10-16 時点）
+
+Sonnet 5.5 は Sonnet 4.6 より約3割安く（us-east-1 の `us.` で 100万トークンあたり入力 2.2・出力 11 米ドル。4.6 は 3.3・16.5）、Haiku 5.5 は Haiku 4.5 の 1/10 の料金なので、使えるようになったら切り替えたい。
+
+- 症状: Sonnet 5.5・Haiku 5.5・Sonnet 5・Opus 5・Fable 5.1 を呼ぶと、`us.`・`global.` の推論プロファイルとも、CLI とコンソールのプレイグラウンドのどちらからでも `AccessDeniedException: ... is not available for this account. ... contact AWS Sales` になる。Sonnet 4.6・Haiku 4.5 は同じユーザー・同じリージョンで使える。
+- 状態: `aws bedrock get-foundation-model-availability` で、5 系は `agreementAvailability` だけが `NOT_AVAILABLE`（`authorizationStatus` は `AUTHORIZED`、利用権と提供地域は `AVAILABLE`）。呼び出したユーザーには Marketplace の購読の権限があるが、最初の呼び出しでの自動の契約は結ばれなかった。
+- 原因（推定）: IAM や SCP ではなく、AWS 側のアカウント単位の提供の制限。AWS のドキュメントは「一部のモデルはアカウント単位の追加のアクセスが必要で、条件を満たしても拒否されるなら営業窓口へ」としている。コミュニティの報告では、AWS の営業窓口から「Claude 5 系は利用実績と支出額に応じて段階的に開放している。申請と承認を経て使えるようになる」という回答があった（公式の説明ではない）。
+- 対応: 当面は Sonnet 4.6 で運用する。5 系を使うには、エラー文にある AWS の営業窓口（https://aws.amazon.com/contact-us/sales-support/ ）に申請する（回答まで数週間かかった事例がある）。開放されたかは次で確かめる。
+
+  ```sh
+  AWS_PROFILE=touring aws bedrock get-foundation-model-availability --region us-east-1 \
+    --model-id anthropic.claude-sonnet-5-5 --query agreementAvailability.status
+  ```
+
+  `AVAILABLE` になったら、上の手順で設定値を `us.anthropic.claude-sonnet-5-5` に変え、`scripts/smoke.py` で確かめる。
