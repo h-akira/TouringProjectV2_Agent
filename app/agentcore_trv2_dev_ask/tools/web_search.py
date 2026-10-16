@@ -29,4 +29,9 @@ def load_web_search() -> Optional[MCPClient]:
     if not endpoint:
         return None
     region = os.environ.get("GATEWAY_REGION", "us-east-1")
-    return MCPClient(lambda: aws_iam_streamablehttp_client(endpoint=endpoint, aws_region=region, aws_service=_AWS_SERVICE))
+    # continue_on_error: if the gateway cannot be reached, the agent gets no search tools
+    # and still answers, instead of every question failing.
+    return MCPClient(
+        lambda: aws_iam_streamablehttp_client(endpoint=endpoint, aws_region=region, aws_service=_AWS_SERVICE),
+        continue_on_error=True,
+    )

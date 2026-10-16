@@ -13,3 +13,12 @@ def test_injected_url_is_found_by_prefix():
 
 def test_no_gateway():
     assert find_gateway_url({"PATH": "/bin"}) is None
+
+
+def test_gateway_failure_degrades_to_no_tools(monkeypatch):
+    from tools import web_search
+
+    monkeypatch.setenv("GATEWAY_URL", "https://example.invalid/mcp")
+    client = web_search.load_web_search()
+    assert client is not None
+    assert client._continue_on_error is True

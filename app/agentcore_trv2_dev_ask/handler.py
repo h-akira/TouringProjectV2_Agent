@@ -46,11 +46,12 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
         yield error_event("agent_failed", str(error))
         return
 
-    agent = deps.agent_factory(model_id, deps.sessions.get(session_id))
     shaper = EventShaper()
     tools: list[str] = []
     result = None
     try:
+        # Inside the try: building the agent loads MCP tools and can fail on its own.
+        agent = deps.agent_factory(model_id, deps.sessions.get(session_id))
         async for event in agent.stream_async(
             prompt,
             invocation_state={LOCATION_KEY: payload.get("location")},

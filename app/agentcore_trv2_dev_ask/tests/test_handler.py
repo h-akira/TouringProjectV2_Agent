@@ -137,3 +137,12 @@ def test_empty_answer_is_agent_failed():
     agent = FakeAgent([], [], "   ")
     deps, _ = make_deps(agent=agent)
     assert run({"prompt": "Q"}, deps)[-1] == {"type": "error", "code": "agent_failed", "message": "empty answer"}
+
+
+def test_agent_creation_error_is_agent_failed():
+    def failing_factory(model_id, messages):
+        raise RuntimeError("gateway unreachable")
+
+    deps, _ = make_deps()
+    deps.agent_factory = failing_factory
+    assert run({"prompt": "Q"}, deps) == [{"type": "error", "code": "agent_failed", "message": "RuntimeError"}]
