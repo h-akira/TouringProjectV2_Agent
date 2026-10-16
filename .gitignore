@@ -8,3 +8,11 @@ cdk.out/
 .env
 .env.*
 .DS_Store
+
+# AgentCore: files that hold the account id or deployed ARNs
+agentcore/aws-targets.json
+agentcore/.cli/
+agentcore/.env.local
+agentcore/cdk/cdk.out/
+agentcore/cdk/node_modules/
+agentcore/cdk/dist/

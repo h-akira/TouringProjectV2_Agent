@@ -1,0 +1,87 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "trv2Agent",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "trv2Agent"
+  },
+  "runtimes": [
+    {
+      "name": "agentcore_trv2_dev_ask",
+      "build": "CodeZip",
+      "entrypoint": "main.py",
+      "codeLocation": "app/agentcore_trv2_dev_ask/",
+      "runtimeVersion": "PYTHON_3_14",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "envVars": [
+        {
+          "name": "MODEL_ID_PARAMETER",
+          "value": "/trv2/dev/agent-model-id"
+        },
+        {
+          "name": "BEDROCK_MAX_TOKENS",
+          "value": "800"
+        },
+        {
+          "name": "AGENT_MAX_TOOL_CALLS",
+          "value": "4"
+        },
+        {
+          "name": "AGENT_MAX_TURNS",
+          "value": "8"
+        },
+        {
+          "name": "AGENT_MAX_HISTORY_MESSAGES",
+          "value": "10"
+        },
+        {
+          "name": "AGENT_MAX_TOOL_RESULT_CHARS",
+          "value": "3000"
+        }
+      ],
+      "lifecycleConfiguration": {
+        "idleRuntimeSessionTimeout": 3600
+      }
+    }
+  ],
+  "memories": [],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [
+    {
+      "name": "gwTrv2DevMain",
+      "protocolType": "MCP",
+      "description": "Web search gateway for the touring agent",
+      "targets": [
+        {
+          "name": "webSearch",
+          "targetType": "connector",
+          "connectorId": "web-search",
+          "configurations": [
+            {
+              "name": "WebSearch",
+              "description": "",
+              "parameterValues": {},
+              "parameterOverrides": []
+            }
+          ]
+        }
+      ],
+      "authorizerType": "AWS_IAM",
+      "enableSemanticSearch": true,
+      "exceptionLevel": "NONE"
+    }
+  ],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "capacityProviders": [],
+  "payments": []
+}
