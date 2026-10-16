@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentcore_trv2_dev_ask"
+version = "0.1.0"
+description = "AgentCore Runtime Application using Strands SDK"
+requires-python = ">=3.13"
+dependencies = [
+    "aws-opentelemetry-distro ~= 0.18.0",
+    "bedrock-agentcore[strands-agents] >= 1.24.1",
+    "boto3 >= 1.43.0",
+    "botocore[crt] >= 1.35.0",
+    "mcp-proxy-for-aws >= 1.7.0",
+    "strands-agents >= 1.61.1",
+]
+
+[dependency-groups]
+# Test-only; `uv sync --no-dev` (used for packaging) leaves it out.
+dev = ["pytest >= 8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

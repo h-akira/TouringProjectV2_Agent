@@ -1,0 +1,66 @@
+"""Conversation history per session: only the questions and the final answers.
+
+Tool calls and their (large) results are dropped after each turn so the next
+question does not resend them to the model.
+"""
+from __future__ import annotations
+
+import copy
+from collections import OrderedDict
+from typing import Any
+
+Message = dict[str, Any]
+
+
+def _has_tool_block(message: Message) -> bool:
+    return any("toolUse" in block or "toolResult" in block for block in message.get("content", []))
+
+
+def _text_only(message: Message) -> Message | None:
+    blocks = [
+        {"text": block["text"]}
+        for block in message.get("content", [])
+        if isinstance(block.get("text"), str) and block["text"].strip()
+    ]
+    return {"role": message["role"], "content": blocks} if blocks else None
+
+
+def prune_history(messages: list[Message], max_messages: int) -> list[Message]:
+    """Keep alternating user/assistant text messages, latest first, ending with an answer."""
+    kept: list[Message] = []
+    for message in messages:
+        if _has_tool_block(message):
+            continue
+        text = _text_only(message)
+        if text is None:
+            continue
+        if kept and kept[-1]["role"] == text["role"]:
+            kept[-1] = text  # keep the later one so roles alternate
+        else:
+            kept.append(text)
+    if kept and kept[-1]["role"] == "user":
+        kept.pop()  # a question without an answer (failed turn)
+    kept = kept[-max_messages:] if max_messages > 0 else []
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    return kept
+
+
+class SessionStore:
+    """In-process history per runtime session, bounded by least-recently-used eviction."""
+
+    def __init__(self, max_sessions: int = 128) -> None:
+        self._max_sessions = max_sessions
+        self._sessions: OrderedDict[str, list[Message]] = OrderedDict()
+
+    def get(self, session_id: str) -> list[Message]:
+        if session_id not in self._sessions:
+            return []
+        self._sessions.move_to_end(session_id)
+        return copy.deepcopy(self._sessions[session_id])
+
+    def put(self, session_id: str, messages: list[Message]) -> None:
+        self._sessions[session_id] = copy.deepcopy(messages)
+        self._sessions.move_to_end(session_id)
+        while len(self._sessions) > self._max_sessions:
+            self._sessions.popitem(last=False)
