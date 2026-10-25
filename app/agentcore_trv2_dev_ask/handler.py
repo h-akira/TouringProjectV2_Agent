@@ -1,6 +1,7 @@
 """One invocation: read the model id, run the agent, stream events, and keep history on success."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -45,7 +46,8 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
         yield error_event("bad_request", "prompt is required")
         return
     try:
-        model_id = deps.model_ids.get()
+        # Blocking (SSM); a worker thread keeps the event loop, and /ping, answering (Agent #4).
+        model_id = await asyncio.to_thread(deps.model_ids.get)
     except ModelIdError as error:
         _log({"event": "invoke_failed", "session": session_id, "reason": str(error)})
         yield error_event("agent_failed", str(error))
@@ -55,8 +57,8 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
     tools: list[str] = []
     result = None
     try:
-        # Inside the try: building the agent loads MCP tools and can fail on its own.
-        agent = deps.agent_factory(model_id, deps.sessions.get(session_id))
+        # Inside the try: building the agent loads MCP tools and can fail on its own. Blocking too, so off the loop.
+        agent = await asyncio.to_thread(deps.agent_factory, model_id, deps.sessions.get(session_id))
         async for event in agent.stream_async(
             prompt,
             invocation_state={LOCATION_KEY: payload.get("location")},

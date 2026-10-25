@@ -1,5 +1,6 @@
 """Tests for one invocation: payload checks, model id, streaming, history and errors."""
 import asyncio
+import threading
 from types import SimpleNamespace
 
 from config import load_settings
@@ -170,6 +171,28 @@ def test_a_question_cut_off_at_the_turn_cap_is_answered_with_a_fixed_line():
 def test_an_empty_answer_that_did_not_hit_a_limit_is_still_a_failure():
     deps, _ = make_deps(agent=LimitedAgent([], stop_reason="end_turn"))
     assert run({"prompt": "Q"}, deps)[-1] == {"type": "error", "code": "agent_failed", "message": "empty answer"}
+
+
+def test_reading_the_model_id_and_building_the_agent_do_not_block_the_event_loop():
+    # SSM and the MCP connection are blocking calls; they run in a worker thread so /ping keeps answering (Agent #4).
+    threads = {}
+
+    class RecordingModelIds:
+        def get(self):
+            threads["model_id"] = threading.get_ident()
+            return "model-a"
+
+    agent = FakeAgent([], [], "A")
+    deps, _ = make_deps(model_ids=RecordingModelIds())
+
+    def factory(model_id, messages):
+        threads["factory"] = threading.get_ident()
+        return agent
+
+    deps.agent_factory = factory
+    assert run({"prompt": "Q"}, deps)[-1]["type"] == "done"
+    loop_thread = threading.get_ident()
+    assert threads["model_id"] != loop_thread and threads["factory"] != loop_thread
 
 
 def test_agent_creation_error_is_agent_failed():
