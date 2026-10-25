@@ -15,6 +15,11 @@ from tools.places import LOCATION_KEY
 
 log = logging.getLogger("trv2.agent")
 
+# Said when the model ran into a limit (turns, tokens) before answering: the rider hears that it could not be
+# looked up instead of the failure tone (Agent #3, US-A-05.003). No second model call, so no extra input tokens.
+LIMIT_ANSWER = "調べきれませんでした。"
+_LIMIT_PREFIX = "limit_"
+
 
 @dataclass
 class Deps:
@@ -69,13 +74,18 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
         yield error_event("agent_failed", type(error).__name__)
         return
 
-    if result is None or not final_answer(result.message):
+    answer = None
+    if result is not None and not final_answer(result.message) and str(result.stop_reason).startswith(_LIMIT_PREFIX):
+        answer = LIMIT_ANSWER
+        # Kept as the turn's answer, so the history still alternates question and answer.
+        agent.messages.append({"role": "assistant", "content": [{"text": LIMIT_ANSWER}]})
+    elif result is None or not final_answer(result.message):
         _log({"event": "invoke_failed", "session": session_id, "modelId": model_id, "reason": "empty answer"})
         yield error_event("agent_failed", "empty answer")
         return
 
     deps.sessions.put(session_id, prune_history(agent.messages, deps.settings.max_history_messages))
-    done = done_event(result, model_id)
+    done = done_event(result, model_id, answer)
     _log({"event": "invoke_done", "session": session_id, "modelId": model_id, "tools": tools,
           "usage": done["usage"], "stopReason": done["stopReason"]})
     yield done

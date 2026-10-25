@@ -13,11 +13,12 @@ def error_event(code: str, message: str) -> dict:
     return {"type": "error", "code": code, "message": message}
 
 
-def done_event(result: Any, model_id: str) -> dict:
+def done_event(result: Any, model_id: str, answer: str | None = None) -> dict:
+    """The last event; answer replaces the model's own when the handler had to supply one."""
     usage = result.metrics.accumulated_usage
     return {
         "type": "done",
-        "answer": final_answer(result.message),
+        "answer": answer if answer is not None else final_answer(result.message),
         "stopReason": str(result.stop_reason),
         "usage": {
             "inputTokens": usage.get("inputTokens", 0),
