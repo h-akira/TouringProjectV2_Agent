@@ -16,6 +16,8 @@ class Settings:
     max_history_messages: int
     max_tool_result_chars: int
     model_cache_seconds: float
+    # How long the web search's MCP connection may sit unused before it is started again (Agent #2).
+    mcp_max_idle_seconds: float = 600.0
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
@@ -29,4 +31,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         max_history_messages=int(env.get("AGENT_MAX_HISTORY_MESSAGES", "10")),
         max_tool_result_chars=int(env.get("AGENT_MAX_TOOL_RESULT_CHARS", "3000")),
         model_cache_seconds=float(env.get("MODEL_ID_CACHE_SECONDS", "60")),
+        mcp_max_idle_seconds=float(env.get("AGENT_MCP_MAX_IDLE_SECONDS", "600")),
     )

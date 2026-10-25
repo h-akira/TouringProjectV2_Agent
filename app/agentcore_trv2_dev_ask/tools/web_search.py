@@ -1,9 +1,11 @@
 """Web search through the AgentCore Gateway's managed web-search connector (MCP, IAM-signed)."""
 from __future__ import annotations
 
+import logging
 import os
-from collections.abc import Mapping
-from typing import Optional
+import time
+from collections.abc import Callable, Mapping
+from typing import Any, Optional
 
 from mcp_proxy_for_aws.client import aws_iam_streamablehttp_client
 from strands.tools.mcp import MCPClient
@@ -11,6 +13,10 @@ from strands.tools.mcp import MCPClient
 _AWS_SERVICE = "bedrock-agentcore"
 _PREFIX = "AGENTCORE_GATEWAY_"
 _SUFFIX = "_URL"
+# The consumer this process holds on the MCP client, so the client outlives each question's agent.
+KEEPER = "trv2-process"
+
+log = logging.getLogger("trv2.agent")
 
 
 def find_gateway_url(env: Mapping[str, str] = os.environ) -> Optional[str]:
@@ -35,3 +41,33 @@ def load_web_search() -> Optional[MCPClient]:
         lambda: aws_iam_streamablehttp_client(endpoint=endpoint, aws_region=region, aws_service=_AWS_SERVICE),
         continue_on_error=True,
     )
+
+
+class WebSearchConnection:
+    """Keeps the gateway's MCP connection across questions (Agent #2).
+
+    Each question builds a fresh agent, which becomes a consumer of the MCP client. When the agent is collected,
+    Strands removes it, and a client with no consumer left stops and starts again, listing its tools, on the next
+    question. Holding one consumer for the process keeps the connection. It is started again before a question
+    when the last start failed (Strands keeps a swallowed failure, and its stop() drops every consumer) or when it
+    has not been used for max_idle_seconds, as the gateway's session may have gone meanwhile."""
+
+    def __init__(self, client: Any, max_idle_seconds: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self._client = client
+        self._max_idle_seconds = max_idle_seconds
+        self._clock = clock
+        self._last_used: Optional[float] = None
+
+    def for_question(self) -> Any:
+        now = self._clock()
+        failed = bool(getattr(self._client, "_connection_failed", False))
+        idle = self._last_used is not None and now - self._last_used > self._max_idle_seconds
+        if failed or idle:
+            try:
+                # With no other consumer, this stops the client and clears the kept failure.
+                self._client.remove_consumer(KEEPER)
+            except Exception as error:  # noqa: BLE001 - the question still goes ahead with the old client
+                log.warning("mcp reset failed: %s", type(error).__name__)
+        self._client.add_consumer(KEEPER)
+        self._last_used = now
+        return self._client
