@@ -16,13 +16,15 @@ from hooks import ToolCallLimit, ToolResultTrimmer
 from model_config import ModelIdSource
 from prompt import SYSTEM_PROMPT
 from tools.places import find_place, nearby_places
-from tools.web_search import load_web_search
+from tools.web_search import WebSearchConnection, load_web_search
 
 logging.getLogger("trv2.agent").setLevel(logging.INFO)
 
 app = BedrockAgentCoreApp()
 SETTINGS = load_settings()
-WEB_SEARCH = load_web_search()
+_WEB_SEARCH_CLIENT = load_web_search()
+# Held for the process, so the gateway connection is not made again for every question (Agent #2).
+WEB_SEARCH = WebSearchConnection(_WEB_SEARCH_CLIENT, SETTINGS.mcp_max_idle_seconds) if _WEB_SEARCH_CLIENT else None
 if WEB_SEARCH is None:
     app.logger.warning("no gateway url in env - answering without web search")
 
@@ -33,8 +35,9 @@ def build_agent(model_id: str, messages: list[dict]) -> Agent:
         model=BedrockModel(model_id=model_id, region_name=SETTINGS.region, max_tokens=SETTINGS.max_tokens),
         messages=messages,
         system_prompt=SYSTEM_PROMPT,
-        tools=[nearby_places, find_place] + ([WEB_SEARCH] if WEB_SEARCH else []),
-        hooks=[ToolCallLimit(SETTINGS.max_tool_calls), ToolResultTrimmer(SETTINGS.max_tool_result_chars)],
+        tools=[nearby_places, find_place] + ([WEB_SEARCH.for_question()] if WEB_SEARCH else []),
+        hooks=[ToolCallLimit(SETTINGS.max_tool_calls), ToolResultTrimmer(SETTINGS.max_tool_result_chars)]
+        + ([WEB_SEARCH.failure_watch()] if WEB_SEARCH else []),
         # History is pruned by handler.py after each successful turn.
         conversation_manager=NullConversationManager(),
         callback_handler=None,

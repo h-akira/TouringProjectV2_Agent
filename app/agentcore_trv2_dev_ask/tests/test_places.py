@@ -136,6 +136,14 @@ def test_radius_is_clamped(client):
     assert client.calls[0][1]["QueryRadius"] == int(places.MAX_RADIUS_KM * 1000)
 
 
+@pytest.mark.parametrize("radius", [math.nan, math.inf, -math.inf])
+def test_a_radius_that_is_not_a_number_uses_the_default(client, radius):
+    # Failures are answered as text, never raised (Agent #5).
+    answer = places.nearby_places(kind="公園", radius_km=radius, tool_context=_context(TOKYO_STATION))
+    assert isinstance(answer, str)
+    assert client.calls[0][1]["QueryRadius"] == int(places.DEFAULT_RADIUS_KM * 1000)
+
+
 def test_find_place_is_biased_to_rider_and_sorted_by_distance(client):
     client.items = [_place("遠い", 35.70, 139.77, distance=2000), _place("近い", 35.682, 139.767, distance=100)]
     answer = places.find_place(name="マクドナルド", tool_context=_context(TOKYO_STATION))

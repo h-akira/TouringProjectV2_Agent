@@ -12,6 +12,11 @@ def test_defaults():
     assert settings.max_history_messages == 10
     assert settings.max_tool_result_chars == 3000
     assert settings.model_cache_seconds == 60.0
+    assert settings.mcp_max_idle_seconds == 600.0
+
+
+def test_the_mcp_idle_time_can_be_set():
+    assert load_settings({"AGENT_MCP_MAX_IDLE_SECONDS": "120"}).mcp_max_idle_seconds == 120.0
 
 
 def test_environment_overrides():

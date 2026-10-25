@@ -40,6 +40,10 @@
         {
           "name": "AGENT_MAX_TOOL_RESULT_CHARS",
           "value": "3000"
+        },
+        {
+          "name": "AGENT_MCP_MAX_IDLE_SECONDS",
+          "value": "600"
         }
       ],
       "lifecycleConfiguration": {

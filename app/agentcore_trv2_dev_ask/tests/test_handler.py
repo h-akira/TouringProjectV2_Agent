@@ -1,9 +1,10 @@
 """Tests for one invocation: payload checks, model id, streaming, history and errors."""
 import asyncio
+import threading
 from types import SimpleNamespace
 
 from config import load_settings
-from handler import Deps, handle
+from handler import LIMIT_ANSWER, Deps, handle
 from history import SessionStore
 from model_config import ModelIdError
 
@@ -137,6 +138,61 @@ def test_empty_answer_is_agent_failed():
     agent = FakeAgent([], [], "   ")
     deps, _ = make_deps(agent=agent)
     assert run({"prompt": "Q"}, deps)[-1] == {"type": "error", "code": "agent_failed", "message": "empty answer"}
+
+
+class LimitedAgent(FakeAgent):
+    """The model kept calling tools until the turn cap; the last message is a tool result, not an answer."""
+
+    def __init__(self, messages, stop_reason="limit_turns"):
+        super().__init__(messages, [], "")
+        self._stop_reason = stop_reason
+
+    async def stream_async(self, prompt, invocation_state=None, limits=None):
+        self.calls.append({"prompt": prompt, "invocation_state": invocation_state, "limits": limits})
+        self.messages.append(user(prompt))
+        self.messages.append({"role": "assistant", "content": [{"toolUse": {"toolUseId": "t1", "name": "web_search", "input": {}}}]})
+        tool_result = {"role": "user", "content": [{"toolResult": {"toolUseId": "t1", "content": [{"text": "上限"}]}}]}
+        self.messages.append(tool_result)
+        yield {"current_tool_use": {"toolUseId": "t1", "name": "web_search"}}
+        yield {"result": SimpleNamespace(message=tool_result, stop_reason=self._stop_reason,
+                                         metrics=SimpleNamespace(accumulated_usage={"inputTokens": 10}, cycle_count=8))}
+
+
+def test_a_question_cut_off_at_the_turn_cap_is_answered_with_a_fixed_line():
+    # The rider hears that it could not be looked up, not the failure tone (Agent #3).
+    sessions = SessionStore()
+    deps, _ = make_deps(agent=LimitedAgent([]), sessions=sessions)
+    events = run({"prompt": "Q1"}, deps)
+    assert events[-1]["type"] == "done"
+    assert events[-1]["answer"] == LIMIT_ANSWER and events[-1]["stopReason"] == "limit_turns"
+    assert sessions.get("s1") == [user("Q1"), assistant(LIMIT_ANSWER)]
+
+
+def test_an_empty_answer_that_did_not_hit_a_limit_is_still_a_failure():
+    deps, _ = make_deps(agent=LimitedAgent([], stop_reason="end_turn"))
+    assert run({"prompt": "Q"}, deps)[-1] == {"type": "error", "code": "agent_failed", "message": "empty answer"}
+
+
+def test_reading_the_model_id_and_building_the_agent_do_not_block_the_event_loop():
+    # SSM and the MCP connection are blocking calls; they run in a worker thread so /ping keeps answering (Agent #4).
+    threads = {}
+
+    class RecordingModelIds:
+        def get(self):
+            threads["model_id"] = threading.get_ident()
+            return "model-a"
+
+    agent = FakeAgent([], [], "A")
+    deps, _ = make_deps(model_ids=RecordingModelIds())
+
+    def factory(model_id, messages):
+        threads["factory"] = threading.get_ident()
+        return agent
+
+    deps.agent_factory = factory
+    assert run({"prompt": "Q"}, deps)[-1]["type"] == "done"
+    loop_thread = threading.get_ident()
+    assert threads["model_id"] != loop_thread and threads["factory"] != loop_thread
 
 
 def test_agent_creation_error_is_agent_failed():

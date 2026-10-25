@@ -60,6 +60,7 @@ MAX_RETURNED = 5
 MAX_FETCHED = 20
 MIN_RADIUS_KM = 0.2
 MAX_RADIUS_KM = 50.0
+DEFAULT_RADIUS_KM = 5.0
 
 _NO_LOCATION = "現在地が分からないため、周辺を探せません。"
 _FAILED = "周辺の検索に失敗しました。"
@@ -162,7 +163,8 @@ def _answer(lines: list[str], location: dict, side: Optional[str]) -> str:
 
 
 @tool(context=True)
-def nearby_places(kind: Kind, tool_context: ToolContext, side: Optional[Side] = None, radius_km: float = 5.0) -> str:
+def nearby_places(kind: Kind, tool_context: ToolContext, side: Optional[Side] = None,
+                  radius_km: float = DEFAULT_RADIUS_KM) -> str:
     """現在地の周辺にある場所を種類で探し、近い順に距離・方角・左右を返す。
 
     「右手に見える山は？」「近くのコンビニは？」のように種類で探すときに使う。
@@ -179,7 +181,9 @@ def nearby_places(kind: Kind, tool_context: ToolContext, side: Optional[Side] = 
     categories = KINDS.get(kind)
     if not categories:
         return f"「{kind}」という種類では探せません。"
-    radius_m = int(min(max(radius_km, MIN_RADIUS_KM), MAX_RADIUS_KM) * 1000)
+    # A radius that is not a finite number falls back to the default instead of raising (Agent #5).
+    radius = _number(radius_km)
+    radius_m = int(min(max(radius if radius is not None else DEFAULT_RADIUS_KM, MIN_RADIUS_KM), MAX_RADIUS_KM) * 1000)
     try:
         result = _get_client().search_nearby(
             QueryPosition=[location["longitude"], location["latitude"]],
