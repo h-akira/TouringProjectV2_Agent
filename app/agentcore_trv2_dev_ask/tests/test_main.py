@@ -18,14 +18,24 @@ def test_each_agent_takes_the_web_search_from_the_held_connection(monkeypatch):
     def unreachable():
         raise ConnectionError("no gateway")
 
-    taken = []
+    from strands.hooks import HookProvider
+
+    taken, watched = [], []
+
+    class Watch(HookProvider):
+        def register_hooks(self, registry, **kwargs):
+            watched.append(True)
 
     class Connection:
         def for_question(self):
             taken.append(True)
             return MCPClient(unreachable, continue_on_error=True)
 
+        def failure_watch(self):
+            return Watch()
+
     monkeypatch.setattr(main, "WEB_SEARCH", Connection())
     main.build_agent("model-a", [])
     main.build_agent("model-a", [])
-    assert taken == [True, True]
+    # Each agent also reports a failed web search back to the connection.
+    assert taken == [True, True] and watched == [True, True]

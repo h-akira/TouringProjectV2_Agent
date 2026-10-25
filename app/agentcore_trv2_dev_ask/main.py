@@ -36,7 +36,8 @@ def build_agent(model_id: str, messages: list[dict]) -> Agent:
         messages=messages,
         system_prompt=SYSTEM_PROMPT,
         tools=[nearby_places, find_place] + ([WEB_SEARCH.for_question()] if WEB_SEARCH else []),
-        hooks=[ToolCallLimit(SETTINGS.max_tool_calls), ToolResultTrimmer(SETTINGS.max_tool_result_chars)],
+        hooks=[ToolCallLimit(SETTINGS.max_tool_calls), ToolResultTrimmer(SETTINGS.max_tool_result_chars)]
+        + ([WEB_SEARCH.failure_watch()] if WEB_SEARCH else []),
         # History is pruned by handler.py after each successful turn.
         conversation_manager=NullConversationManager(),
         callback_handler=None,

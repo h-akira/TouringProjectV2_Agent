@@ -1,7 +1,8 @@
 """Tests for finding the gateway url injected by the AgentCore CLI, and for keeping its connection."""
 import asyncio
+from types import SimpleNamespace
 
-from strands.tools.mcp import MCPClient
+from strands.tools.mcp import MCPAgentTool, MCPClient
 
 from tools.web_search import KEEPER, WebSearchConnection, find_gateway_url
 
@@ -11,6 +12,11 @@ class FakeClient:
         self.consumers = set()
         self.removed = []
         self._connection_failed = False
+        self._tool_provider_started = False
+        self.active = True
+
+    def _is_session_active(self):
+        return self.active
 
     def add_consumer(self, consumer_id, **kwargs):
         self.consumers.add(consumer_id)
@@ -20,6 +26,8 @@ class FakeClient:
         self.consumers.discard(consumer_id)
         if not self.consumers:
             self._connection_failed = False
+            self._tool_provider_started = False
+            self.active = True
 
 
 class Clock:
@@ -95,3 +103,40 @@ def test_gateway_failure_degrades_to_no_tools(monkeypatch):
     client = web_search.load_web_search()
     assert client is not None
     assert client._continue_on_error is True
+
+
+def test_a_connection_that_stopped_working_is_started_again():
+    # The background thread died, or the session was closed, after the connection was made.
+    client = FakeClient()
+    connection = WebSearchConnection(client, max_idle_seconds=600, clock=Clock())
+    connection.for_question()
+    client._tool_provider_started, client.active = True, False
+    connection.for_question()
+    assert client.removed == [KEEPER] and KEEPER in client.consumers
+
+
+def test_a_failed_web_search_starts_the_connection_again_on_the_next_question():
+    # The gateway may drop the MCP session while the client still looks alive; every call then fails.
+    client = FakeClient()
+    connection = WebSearchConnection(client, max_idle_seconds=600, clock=Clock())
+    connection.for_question()
+    connection.mark_broken()
+    connection.for_question()
+    connection.for_question()
+    assert client.removed == [KEEPER]
+
+
+def _mcp_tool():
+    return object.__new__(MCPAgentTool)
+
+
+def test_the_watch_marks_only_a_failed_mcp_tool(monkeypatch):
+    connection = WebSearchConnection(FakeClient(), max_idle_seconds=600, clock=Clock())
+    marked = []
+    monkeypatch.setattr(connection, "mark_broken", lambda: marked.append(True))
+    watch = connection.failure_watch()
+    watch.on_after_tool_call(SimpleNamespace(selected_tool=_mcp_tool(), result={"status": "success", "content": []}))
+    watch.on_after_tool_call(SimpleNamespace(selected_tool=object(), result={"status": "error", "content": []}))
+    assert marked == []
+    watch.on_after_tool_call(SimpleNamespace(selected_tool=_mcp_tool(), result={"status": "error", "content": []}))
+    assert marked == [True]
