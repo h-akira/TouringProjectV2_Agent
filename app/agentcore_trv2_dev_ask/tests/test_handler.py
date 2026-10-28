@@ -3,6 +3,9 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
+from strands import Agent
+from strands.models import Model
+
 from config import load_settings
 from handler import LIMIT_ANSWER, Deps, handle
 from history import SessionStore
@@ -202,3 +205,58 @@ def test_agent_creation_error_is_agent_failed():
     deps, _ = make_deps()
     deps.agent_factory = failing_factory
     assert run({"prompt": "Q"}, deps) == [{"type": "error", "code": "agent_failed", "message": "RuntimeError"}]
+
+
+class CutOffModel(Model):
+    """A model whose reply stops at its output token cap (Agent #9), after the given content blocks."""
+
+    def __init__(self, blocks):
+        self._blocks = blocks
+
+    def update_config(self, **model_config):
+        pass
+
+    def get_config(self):
+        return {}
+
+    def structured_output(self, output_model, prompt, system_prompt=None, **kwargs):
+        raise NotImplementedError
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        yield {"messageStart": {"role": "assistant"}}
+        for block in self._blocks:
+            if "text" in block:
+                yield {"contentBlockStart": {"start": {}}}
+                yield {"contentBlockDelta": {"delta": {"text": block["text"]}}}
+            else:
+                yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": "t1", "name": block["tool"]}}}}
+                yield {"contentBlockDelta": {"delta": {"toolUse": {"input": '{"query": "'}}}}
+            yield {"contentBlockStop": {}}
+        yield {"messageStop": {"stopReason": "max_tokens"}}
+        yield {"metadata": {"usage": {"inputTokens": 30, "outputTokens": 800, "totalTokens": 830},
+                            "metrics": {"latencyMs": 1}}}
+
+
+def cut_off_deps(blocks, sessions):
+    deps, _ = make_deps(sessions=sessions)
+    deps.agent_factory = lambda model_id, messages: Agent(model=CutOffModel(blocks), messages=messages,
+                                                          callback_handler=None)
+    return deps
+
+
+def test_an_answer_cut_off_at_the_output_token_cap_is_read_as_far_as_it_goes():
+    # Strands raises MaxTokensReachedException instead of returning; the partial answer is still an answer (Agent #9).
+    sessions = SessionStore()
+    events = run({"prompt": "Q1"}, cut_off_deps([{"text": "右手の山は筑波山で、"}], sessions))
+    assert events[-1]["type"] == "done"
+    assert events[-1]["answer"] == "右手の山は筑波山で、" and events[-1]["stopReason"] == "max_tokens"
+    assert events[-1]["usage"]["outputTokens"] == 800
+    assert sessions.get("s1") == [user("Q1"), assistant("右手の山は筑波山で、")]
+
+
+def test_a_reply_cut_off_in_a_tool_call_is_answered_with_the_fixed_line():
+    # Strands puts an English notice where the cut-off tool call was; the rider must not hear it.
+    sessions = SessionStore()
+    events = run({"prompt": "Q1"}, cut_off_deps([{"tool": "web_search"}], sessions))
+    assert events[-1]["type"] == "done" and events[-1]["answer"] == LIMIT_ANSWER
+    assert sessions.get("s1") == [user("Q1"), assistant(LIMIT_ANSWER)]

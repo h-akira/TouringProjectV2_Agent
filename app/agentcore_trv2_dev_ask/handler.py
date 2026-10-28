@@ -4,9 +4,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
+
+from strands.types.exceptions import MaxTokensReachedException
 
 from config import Settings
 from history import SessionStore, prune_history
@@ -16,10 +20,13 @@ from tools.places import LOCATION_KEY
 
 log = logging.getLogger("trv2.agent")
 
-# Said when the model ran into a limit (turns, tokens) before answering: the rider hears that it could not be
-# looked up instead of the failure tone (Agent #3, US-A-05.003). No second model call, so no extra input tokens.
+# Said when the model ran into the turn cap, or its output token cap, before answering: the rider hears that it
+# could not be looked up instead of the failure tone (Agent #3, #9, US-A-05.003). No second model call, so no extra
+# input tokens.
 LIMIT_ANSWER = "調べきれませんでした。"
 _LIMIT_PREFIX = "limit_"
+# What Strands puts in place of a tool call cut off at the output token cap (recover_message_on_max_tokens_reached).
+_CUT_OFF_TOOL = re.compile(r"The selected tool .*'s tool use was incomplete due to maximum token limits being reached\.")
 
 
 @dataclass
@@ -33,6 +40,18 @@ class Deps:
 def _prompt(payload: dict) -> str:
     value = payload.get("prompt")
     return value.strip() if isinstance(value, str) else ""
+
+
+def _settle_cut_off(messages: list[dict]) -> str:
+    """The answer to a reply cut off at the output token cap: its text so far, or LIMIT_ANSWER. Strands has already
+    added the cut-off reply to the history; it is replaced by the answer, so the history still alternates."""
+    last = messages[-1] if messages and messages[-1].get("role") == "assistant" else None
+    blocks = last.get("content", []) if last else []
+    text = "".join(block["text"] for block in blocks
+                   if isinstance(block.get("text"), str) and not _CUT_OFF_TOOL.fullmatch(block["text"])).strip()
+    answer = text or LIMIT_ANSWER
+    messages[len(messages) - (1 if last else 0):] = [{"role": "assistant", "content": [{"text": answer}]}]
+    return answer
 
 
 def _log(record: dict) -> None:
@@ -56,6 +75,7 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
     shaper = EventShaper()
     tools: list[str] = []
     result = None
+    cut_off = False
     try:
         # Inside the try: building the agent loads MCP tools and can fail on its own. Blocking too, so off the loop.
         agent = await asyncio.to_thread(deps.agent_factory, model_id, deps.sessions.get(session_id))
@@ -71,13 +91,19 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
                 if shaped["type"] == "tool":
                     tools.append(shaped["name"])
                 yield shaped
+    except MaxTokensReachedException:
+        # Raised, not returned, at the output token cap (Agent #9).
+        cut_off = True
     except Exception as error:  # noqa: BLE001 - reported to the Backend as a failure
         _log({"event": "invoke_failed", "session": session_id, "modelId": model_id, "reason": type(error).__name__})
         yield error_event("agent_failed", type(error).__name__)
         return
 
     answer = None
-    if result is not None and not final_answer(result.message) and str(result.stop_reason).startswith(_LIMIT_PREFIX):
+    if cut_off:
+        answer = _settle_cut_off(agent.messages)
+        result = SimpleNamespace(message=agent.messages[-1], stop_reason="max_tokens", metrics=agent.event_loop_metrics)
+    elif result is not None and not final_answer(result.message) and str(result.stop_reason).startswith(_LIMIT_PREFIX):
         answer = LIMIT_ANSWER
         # Kept as the turn's answer, so the history still alternates question and answer.
         agent.messages.append({"role": "assistant", "content": [{"text": LIMIT_ANSWER}]})
