@@ -260,3 +260,11 @@ def test_a_reply_cut_off_in_a_tool_call_is_answered_with_the_fixed_line():
     events = run({"prompt": "Q1"}, cut_off_deps([{"tool": "web_search"}], sessions))
     assert events[-1]["type"] == "done" and events[-1]["answer"] == LIMIT_ANSWER
     assert sessions.get("s1") == [user("Q1"), assistant(LIMIT_ANSWER)]
+
+
+def test_a_preface_before_a_cut_off_tool_call_is_not_the_answer():
+    # Only text after the last tool call is an answer (07 UC-8), so a preface is not read out.
+    sessions = SessionStore()
+    events = run({"prompt": "Q1"}, cut_off_deps([{"text": "ウェブで調べます。"}, {"tool": "web_search"}], sessions))
+    assert events[-1]["type"] == "done" and events[-1]["answer"] == LIMIT_ANSWER
+    assert sessions.get("s1") == [user("Q1"), assistant(LIMIT_ANSWER)]

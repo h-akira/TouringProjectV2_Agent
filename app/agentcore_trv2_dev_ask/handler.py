@@ -43,12 +43,13 @@ def _prompt(payload: dict) -> str:
 
 
 def _settle_cut_off(messages: list[dict]) -> str:
-    """The answer to a reply cut off at the output token cap: its text so far, or LIMIT_ANSWER. Strands has already
-    added the cut-off reply to the history; it is replaced by the answer, so the history still alternates."""
+    """The answer to a reply cut off at the output token cap: its text after the last tool call so far (a preface is
+    not an answer, 07 UC-8), or LIMIT_ANSWER. Strands has already added the cut-off reply to the history; it is
+    replaced by the answer, so the history still alternates."""
     last = messages[-1] if messages and messages[-1].get("role") == "assistant" else None
-    blocks = last.get("content", []) if last else []
-    text = "".join(block["text"] for block in blocks
-                   if isinstance(block.get("text"), str) and not _CUT_OFF_TOOL.fullmatch(block["text"])).strip()
+    texts = [block["text"] for block in (last.get("content", []) if last else []) if isinstance(block.get("text"), str)]
+    cut = [index for index, value in enumerate(texts) if _CUT_OFF_TOOL.fullmatch(value)]
+    text = "".join(texts[cut[-1] + 1:] if cut else texts).strip()
     answer = text or LIMIT_ANSWER
     messages[len(messages) - (1 if last else 0):] = [{"role": "assistant", "content": [{"text": answer}]}]
     return answer
