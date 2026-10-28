@@ -39,3 +39,47 @@ def test_each_agent_takes_the_web_search_from_the_held_connection(monkeypatch):
     main.build_agent("model-a", [])
     # Each agent also reports a failed web search back to the connection.
     assert taken == [True, True] and watched == [True, True]
+
+
+def test_agents_built_at_once_load_the_web_search_one_at_a_time(monkeypatch):
+    # Two first questions at once would both start the MCP client, and the second start fails (Agent #10).
+    import threading
+    import time
+
+    from strands.hooks import HookProvider
+    from strands.tools import ToolProvider
+
+    inside, most, built = [0], [0], []
+
+    class SlowProvider(ToolProvider):
+        async def load_tools(self, **kwargs):
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+            time.sleep(0.05)
+            inside[0] -= 1
+            return []
+
+        def add_consumer(self, consumer_id, **kwargs):
+            pass
+
+        def remove_consumer(self, consumer_id, **kwargs):
+            pass
+
+    class Connection:
+        def for_question(self):
+            return SlowProvider()
+
+        def failure_watch(self):
+            return NoWatch()
+
+    class NoWatch(HookProvider):
+        def register_hooks(self, registry, **kwargs):
+            pass
+
+    monkeypatch.setattr(main, "WEB_SEARCH", Connection())
+    threads = [threading.Thread(target=lambda: built.append(main.build_agent("model-a", []))) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(built) == 2 and most[0] == 1
