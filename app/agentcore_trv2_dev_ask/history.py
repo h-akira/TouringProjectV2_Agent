@@ -5,6 +5,7 @@ question does not resend them to the model.
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 from collections import OrderedDict
 from typing import Any
@@ -64,3 +65,24 @@ class SessionStore:
         self._sessions.move_to_end(session_id)
         while len(self._sessions) > self._max_sessions:
             self._sessions.popitem(last=False)
+
+
+class SessionLocks:
+    """One lock per runtime session, so that calls on one session go one by one: each starts from the history the one
+    before it left (Agent #6, adr/0014). Bounded like the histories; a lock in use is never dropped."""
+
+    def __init__(self, max_locks: int = 256) -> None:
+        self._max_locks = max_locks
+        self._locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+
+    def get(self, session_id: str) -> asyncio.Lock:
+        lock = self._locks.get(session_id)
+        if lock is None:
+            lock = self._locks[session_id] = asyncio.Lock()
+        self._locks.move_to_end(session_id)
+        for old_id in list(self._locks):
+            if len(self._locks) <= self._max_locks:
+                break
+            if not self._locks[old_id].locked() and old_id != session_id:
+                del self._locks[old_id]
+        return lock

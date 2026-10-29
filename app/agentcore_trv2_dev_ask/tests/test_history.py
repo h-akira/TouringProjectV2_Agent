@@ -1,5 +1,5 @@
 """Tests for history pruning and the per-session store."""
-from history import SessionStore, prune_history
+from history import SessionLocks, SessionStore, prune_history
 
 
 def user(text):
@@ -66,3 +66,25 @@ def test_store_evicts_least_recently_used():
     store.put("c", [user("c")])
     assert store.get("b") == []
     assert store.get("a") == [user("a")]
+
+
+def test_a_session_gets_the_same_lock_each_time():
+    locks = SessionLocks()
+    assert locks.get("s1") is locks.get("s1")
+    assert locks.get("s1") is not locks.get("s2")
+
+
+def test_old_locks_are_dropped_beyond_the_bound_but_one_in_use_stays():
+    import asyncio
+
+    async def scenario():
+        locks = SessionLocks(max_locks=2)
+        held = locks.get("busy")
+        await held.acquire()
+        locks.get("s1")
+        locks.get("s2")
+        locks.get("s3")
+        assert locks.get("busy") is held
+        assert len(locks._locks) <= 3  # the busy one stays even though it is the oldest
+
+    asyncio.run(scenario())

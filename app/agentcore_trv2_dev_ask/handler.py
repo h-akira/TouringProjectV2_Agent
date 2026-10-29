@@ -6,14 +6,14 @@ import json
 import logging
 import re
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
 from strands.types.exceptions import MaxTokensReachedException
 
 from config import Settings
-from history import SessionStore, prune_history
+from history import SessionLocks, SessionStore, prune_history
 from model_config import ModelIdError
 from stream import EventShaper, done_event, error_event, final_answer
 from tools.places import LOCATION_KEY
@@ -27,6 +27,8 @@ LIMIT_ANSWER = "調べきれませんでした。"
 _LIMIT_PREFIX = "limit_"
 # What Strands puts in place of a tool call cut off at the output token cap (recover_message_on_max_tokens_reached).
 _CUT_OFF_TOOL = re.compile(r"The selected tool .*'s tool use was incomplete due to maximum token limits being reached\.")
+# The longest a call may be told to take; a longer number is taken as a mistake.
+MAX_DEADLINE_SECONDS = 600.0
 
 
 @dataclass
@@ -35,11 +37,20 @@ class Deps:
     model_ids: Any
     sessions: SessionStore
     agent_factory: Callable[[str, list[dict]], Any]
+    locks: SessionLocks = field(default_factory=SessionLocks)
 
 
 def _prompt(payload: dict) -> str:
     value = payload.get("prompt")
     return value.strip() if isinstance(value, str) else ""
+
+
+def _deadline_seconds(payload: dict, settings: Settings) -> float:
+    """How long this call may take: what the Backend sent (adr/0014), or the default when it sent nothing sensible."""
+    value = payload.get("deadlineSeconds")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and 0 < value <= MAX_DEADLINE_SECONDS:
+        return float(value)
+    return settings.default_deadline_seconds
 
 
 def _settle_cut_off(messages: list[dict]) -> str:
@@ -65,6 +76,18 @@ async def handle(payload: dict, session_id: str, deps: Deps) -> AsyncIterator[di
     if not prompt:
         yield error_event("bad_request", "prompt is required")
         return
+    try:
+        # The wait for the session's lock counts against the deadline too. A cut call keeps no history (adr/0014).
+        async with asyncio.timeout(_deadline_seconds(payload, deps.settings)):
+            async with deps.locks.get(session_id):
+                async for event in _run(payload, prompt, session_id, deps):
+                    yield event
+    except TimeoutError:
+        _log({"event": "invoke_failed", "session": session_id, "reason": "timeout"})
+        yield error_event("timeout", "deadline passed")
+
+
+async def _run(payload: dict, prompt: str, session_id: str, deps: Deps) -> AsyncIterator[dict]:
     try:
         # Blocking (SSM); a worker thread keeps the event loop, and /ping, answering (Agent #4).
         model_id = await asyncio.to_thread(deps.model_ids.get)

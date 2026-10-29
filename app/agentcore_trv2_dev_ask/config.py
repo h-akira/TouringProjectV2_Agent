@@ -18,6 +18,8 @@ class Settings:
     model_cache_seconds: float
     # How long the web search's MCP connection may sit unused before it is started again (Agent #2).
     mcp_max_idle_seconds: float = 600.0
+    # How long a call may take when the Backend sends no deadline (adr/0014); the Backend's own is shorter.
+    default_deadline_seconds: float = 100.0
 
 
 def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
@@ -32,4 +34,5 @@ def load_settings(env: Mapping[str, str] = os.environ) -> Settings:
         max_tool_result_chars=int(env.get("AGENT_MAX_TOOL_RESULT_CHARS", "3000")),
         model_cache_seconds=float(env.get("MODEL_ID_CACHE_SECONDS", "60")),
         mcp_max_idle_seconds=float(env.get("AGENT_MCP_MAX_IDLE_SECONDS", "600")),
+        default_deadline_seconds=float(env.get("AGENT_DEFAULT_DEADLINE_SECONDS", "100")),
     )
