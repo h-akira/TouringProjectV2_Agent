@@ -55,7 +55,8 @@ def check_timeout(client, arn: str) -> bool:
 
 
 def check_one_by_one(client, arn: str) -> bool:
-    """Two calls on one session at the same time both get answered, one after the other (Agent #6, adr/0014)."""
+    """Two calls on one session at the same time both get answered, one after the other, and a third call finds both
+    turns in the history (Agent #6, adr/0014). A Runtime that turns the second call away shows as its error code."""
     session = f"smoke-{uuid.uuid4()}"
     got: dict[str, list[dict]] = {}
 
@@ -63,16 +64,23 @@ def check_one_by_one(client, arn: str) -> bool:
         try:
             got[name] = invoke(client, arn, session, question, TOKYO_STATION)
         except Exception as error:  # noqa: BLE001 - e.g. the Runtime turning the second call away
-            got[name] = [{"type": "error", "code": type(error).__name__}]
+            code = getattr(error, "response", {}).get("Error", {}).get("Code") or type(error).__name__
+            got[name] = [{"type": "error", "code": code}]
 
     threads = [threading.Thread(target=ask, args=("a", "富士山の高さは？")), threading.Thread(target=ask, args=("b", "東京タワーの高さは？"))]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join()
-    ok = len(got) == 2 and all(any(e.get("type") == "done" for e in events) and not any(e.get("type") == "error" for e in events) for events in got.values())
-    types = {name: [e.get("type") for e in events] for name, events in got.items()}
-    print(f"[{'OK' if ok else 'NG'}] 同じセッションの2本: {types}")
+    answered = len(got) == 2 and all(any(e.get("type") == "done" for e in events) and not any(e.get("type") == "error" for e in events) for events in got.values())
+    summary = {name: [e.get("code") or e.get("type") for e in events] for name, events in got.items()}
+    if not answered:
+        print(f"[NG] 同じセッションの2本: {summary}")
+        return False
+    third = next((e for e in invoke(client, arn, session, "さっき聞いた2つの高さを、もう一度それぞれ教えて", TOKYO_STATION) if e.get("type") == "done"), None)
+    text = (third or {}).get("answer", "")
+    ok = "3776" in text and "333" in text
+    print(f"[{'OK' if ok else 'NG'}] 同じセッションの2本と3本目: {summary} answer={text}")
     return ok
 
 
