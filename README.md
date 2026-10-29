@@ -20,6 +20,7 @@ Backend から質問（プロンプトと数値の現在地）を受け、Web �
 - モデル ID の読み込みとエージェントの組み立て（MCP の接続）は、イベントループを止めないよう別のスレッドで行う。
 - ツールは1回の質問につき4回まで。ツールの結果は合計3000文字までに切り詰める。周回の上限（8）に達して回答の文が無いときは、「調べきれませんでした。」を回答として返す。モデルの出力のトークンの上限（`BEDROCK_MAX_TOKENS`）で止まったときは、最後のツールの呼び出しより後ろの途中までの文を回答とし、文が無ければ（ツールの呼び出しの途中で止まったときを含む。その前置きは回答にしない）同じ決まった文を返す。エージェントの組み立ては、MCP の接続の開始がぶつからないよう1つずつ行う。
 - Web 検索の MCP の接続は、質問ごとに作り直すエージェントをまたいで使い回す。つなげなかったとき・つないだ接続が生きていないとき・前の質問で Web 検索が失敗したとき・`AGENT_MCP_MAX_IDLE_SECONDS`（既定600秒）より長く使わなかったときは、次の質問の前につなぎ直す。接続は `tools/web_search.WebSearchConnection` がプロセスの中で持ち続ける（Strands は、質問ごとのエージェントが捨てられると接続を止めるため）。つなぎ直しの判断は Strands の内部の名前（`_connection_failed`・`_tool_provider_started`・`_is_session_active`）を読むので、Strands の版を上げたら `tests/test_web_search.py` の本物の `MCPClient` のテストで確かめる。`AGENT_MCP_MAX_IDLE_SECONDS=0` にすると、質問ごとにつなぎ直す。
+- 呼び出しは、Backend が渡す `deadlineSeconds`（無い・変なときは `AGENT_DEFAULT_DEADLINE_SECONDS`、既定100秒）で打ち切り、`timeout` のエラーを返して履歴を残さない。同じセッションへの呼び出しは、錠（`history.SessionLocks`）で1つずつ処理し、錠の待ちも締め切りに数える（[adr/0014](../adr/0014-ask-time-budget-from-acceptance.md)）。
 - 応答は SSE で `text`・`tool`・`done`・`error` のイベントを返す（親の `docs/07_units_contracts.md` UC-8）。
 
 ## テスト
