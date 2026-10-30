@@ -22,11 +22,15 @@ Backend から質問（プロンプトと数値の現在地）を受け、Web �
 - Web 検索の MCP の接続は、質問ごとに作り直すエージェントをまたいで使い回す。つなげなかったとき・つないだ接続が生きていないとき・前の質問で Web 検索が失敗したとき・`AGENT_MCP_MAX_IDLE_SECONDS`（既定600秒）より長く使わなかったときは、次の質問の前につなぎ直す。接続は `tools/web_search.WebSearchConnection` がプロセスの中で持ち続ける（Strands は、質問ごとのエージェントが捨てられると接続を止めるため）。つなぎ直しの判断は Strands の内部の名前（`_connection_failed`・`_tool_provider_started`・`_is_session_active`）を読むので、Strands の版を上げたら `tests/test_web_search.py` の本物の `MCPClient` のテストで確かめる。`AGENT_MCP_MAX_IDLE_SECONDS=0` にすると、質問ごとにつなぎ直す。
 - 呼び出しは、Backend が渡す `deadlineSeconds`（無い・変なときは `AGENT_DEFAULT_DEADLINE_SECONDS`、既定100秒）で打ち切り、`timeout` のエラーを返して履歴を残さない。同じセッションへの呼び出しは、錠（`history.SessionLocks`）で1つずつ処理し、錠の待ちも締め切りに数える（[adr/0014](../adr/0014-ask-time-budget-from-acceptance.md)）。
 - 応答は SSE で `text`・`tool`・`done`・`error` のイベントを返す（親の `docs/07_units_contracts.md` UC-8）。
+- トレース（OpenTelemetry）には、質問・位置・回答が伏せずに載る。ログには出さない。利用者がアカウントの持ち主だけなので許容している（[adr/0016](../adr/0016-allow-personal-data-in-traces.md)）。
+- Runtime の役割に足している権限（Amazon Location の検索と、SSM のモデル ID の1つ `/trv2/<env>/agent-model-id` の `GetParameter`）は `agentcore/cdk/lib/cdk-stack.ts` の `addProjectPermissions` にあり、`agentcore/cdk/test/cdk.test.ts` で確かめる。`cdk/` を生成し直したら足し直す。`@aws/agentcore-cdk` の L3 が既定で足す権限には、このアプリで使わないもの（構成バンドルなど）が含まれるが、生成されたままにしている。
+- 場所のツールの失敗は `trv2.agent` のロガーで出る（エラーの種類だけ）。場所のクライアントは錠をかけて1度だけ作る。
 
 ## テスト
 
 ```sh
 cd app/agentcore_trv2_dev_ask && uv run pytest
+cd agentcore/cdk && npx jest
 ```
 
 ## デプロイ

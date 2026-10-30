@@ -125,23 +125,8 @@ export class AgentCoreStack extends Stack {
     }
     this.application = new AgentCoreApplication(this, 'Application', appProps as any);
 
-    // Project addition, not CLI output: agentcore.json has no field that grants a
-    // runtime extra permissions. Keep this block if cdk/ is ever regenerated.
-    // - geo-places: the place tools call Amazon Location directly (no per-resource ARN for search).
-    // - ssm: the model id is read from a parameter so it can change without a deploy.
     for (const env of this.application.environments.values()) {
-      env.runtime.role.addToPrincipalPolicy(
-        new iam.PolicyStatement({
-          actions: ['geo-places:SearchNearby', 'geo-places:SearchText'],
-          resources: ['*'],
-        })
-      );
-      env.runtime.role.addToPrincipalPolicy(
-        new iam.PolicyStatement({
-          actions: ['ssm:GetParameter'],
-          resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/trv2/*`],
-        })
-      );
+      addProjectPermissions(env.runtime.role, this.region, this.account);
     }
 
     // Create AgentCoreMcp if there are gateways configured
@@ -307,4 +292,25 @@ export class AgentCoreStack extends Stack {
       value: this.stackName,
     });
   }
+}
+
+/**
+ * Project addition, not CLI output: agentcore.json has no field that grants a runtime extra permissions. Keep this
+ * if cdk/ is ever regenerated (test/cdk.test.ts checks it).
+ * - geo-places: the place tools call Amazon Location directly (no per-resource ARN for search).
+ * - ssm: the model id is read from one parameter, /trv2/<env>/agent-model-id, so it can change without a deploy.
+ */
+export function addProjectPermissions(role: iam.IRole, region: string, account: string): void {
+  role.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      actions: ['geo-places:SearchNearby', 'geo-places:SearchText'],
+      resources: ['*'],
+    })
+  );
+  role.addToPrincipalPolicy(
+    new iam.PolicyStatement({
+      actions: ['ssm:GetParameter'],
+      resources: [`arn:aws:ssm:${region}:${account}:parameter/trv2/*/agent-model-id`],
+    })
+  );
 }

@@ -7,8 +7,10 @@ A failed lookup returns a sentence, not an exception, so the model can still ans
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
+import threading
 from typing import Any, Literal, Optional
 
 import boto3
@@ -65,15 +67,20 @@ DEFAULT_RADIUS_KM = 5.0
 _NO_LOCATION = "現在地が分からないため、周辺を探せません。"
 _FAILED = "周辺の検索に失敗しました。"
 
+log = logging.getLogger("trv2.agent")
+
 _client: Any = None
+_client_lock = threading.Lock()
 
 
 def _get_client() -> Any:
-    """Build the client lazily so importing this module needs no credentials."""
+    """Build the client lazily so importing this module needs no credentials. Tools run in threads, and a boto3
+    client is not safe to build from two threads at once, so the first build is taken one at a time."""
     global _client
-    if _client is None:
-        _client = boto3.client("geo-places", region_name=PLACES_REGION)
-    return _client
+    with _client_lock:
+        if _client is None:
+            _client = boto3.client("geo-places", region_name=PLACES_REGION)
+        return _client
 
 
 def bearing_degrees(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -193,7 +200,7 @@ def nearby_places(kind: Kind, tool_context: ToolContext, side: Optional[Side] = 
             Filter={"IncludeCategories": categories},
         )
     except Exception as error:  # noqa: BLE001 - the model answers without it
-        print(f"search_nearby failed: {type(error).__name__}")
+        log.warning("search_nearby failed: %s", type(error).__name__)
         return _FAILED
     return _answer(describe_places(result.get("ResultItems") or [], location, side), location, side)
 
@@ -222,7 +229,7 @@ def find_place(name: str, tool_context: ToolContext, side: Optional[Side] = None
             Language="ja",
         )
     except Exception as error:  # noqa: BLE001 - the model answers without it
-        print(f"search_text failed: {type(error).__name__}")
+        log.warning("search_text failed: %s", type(error).__name__)
         return _FAILED
     items = sorted(result.get("ResultItems") or [], key=lambda item: item.get("Distance", float("inf")))
     return _answer(describe_places(items, location, side), location, side)

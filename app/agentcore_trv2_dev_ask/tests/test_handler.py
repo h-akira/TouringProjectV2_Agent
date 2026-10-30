@@ -3,6 +3,7 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
+import pytest
 from strands import Agent
 from strands.models import Model
 
@@ -361,3 +362,64 @@ def test_the_wait_for_a_busy_session_counts_against_the_deadline():
     impatient, slow = asyncio.run(both())
     assert impatient == [{"type": "error", "code": "timeout", "message": "deadline passed"}]
     assert other.calls == [] and slow[-1]["type"] == "done"
+
+
+def test_closing_the_stream_midway_raises_nothing_and_keeps_no_history():
+    # The client goes away after the first text: no exception, no history for the cut turn (R5-09),
+    # and the session is free again for the next call.
+    sessions = SessionStore()
+    sessions.put("s1", [user("Q0"), assistant("A0")])
+    cut = FakeAgent([user("Q0"), assistant("A0")], [{"data": "愛"}, {"data": "鷹"}], "愛鷹")
+    fast = SlowAgent([user("Q0"), assistant("A0")], "ok", delay=0.0)
+    deps, _ = make_deps(agent=cut, sessions=sessions)
+    factory_calls: list[int] = []
+
+    def factory(model_id, messages):
+        factory_calls.append(1)
+        return cut if len(factory_calls) == 1 else fast
+
+    deps.agent_factory = factory
+
+    async def go():
+        stream = handle({"prompt": "Q1"}, "s1", deps)
+        first = await stream.__anext__()
+        await stream.aclose()
+        # The lock is released by aclose itself, not by the loop's shutdown: this call must not wait.
+        again = [event async for event in handle({"prompt": "Q2", "deadlineSeconds": 5}, "s1", deps)]
+        return first, again
+
+    first, again = asyncio.run(go())
+    assert first == {"type": "text", "text": "愛"}
+    assert again[-1]["type"] == "done" and again[-1]["answer"] == "ok"
+    assert sessions.get("s1") == [user("Q0"), assistant("A0"), user("Q2"), assistant("ok")]
+
+
+def test_a_cancelled_call_keeps_no_history_and_lets_go_of_the_session():
+    sessions = SessionStore()
+    sessions.put("s1", [user("Q0"), assistant("A0")])
+    slow = SlowAgent([user("Q0"), assistant("A0")], "late", delay=5)
+    fast = SlowAgent([user("Q0"), assistant("A0")], "ok", delay=0.0)
+    deps, _ = make_deps(agent=slow, sessions=sessions)
+    factory_calls: list[int] = []
+
+    def factory(model_id, messages):
+        factory_calls.append(1)
+        return slow if len(factory_calls) == 1 else fast
+
+    deps.agent_factory = factory
+
+    async def go():
+        async def drain():
+            return [event async for event in handle({"prompt": "Q1", "deadlineSeconds": 30}, "s1", deps)]
+
+        task = asyncio.create_task(drain())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The session is free again: the next call on it is not left waiting.
+        return [event async for event in handle({"prompt": "Q2", "deadlineSeconds": 5}, "s1", deps)]
+
+    events = asyncio.run(go())
+    assert events[-1]["type"] == "done" and events[-1]["answer"] == "ok"
+    assert sessions.get("s1") == [user("Q0"), assistant("A0"), user("Q2"), assistant("ok")]

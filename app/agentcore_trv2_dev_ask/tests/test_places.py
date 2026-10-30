@@ -1,5 +1,8 @@
 """Tests for the place tools: geometry, payload handling and failure paths."""
+import logging
 import math
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -168,3 +171,38 @@ def test_nothing_found(client):
 def test_every_kind_has_categories():
     assert set(places.KINDS) == set(places.Kind.__args__)
     assert all(places.KINDS[kind] for kind in places.KINDS)
+
+
+def test_the_client_is_built_once_when_two_tools_start_together(monkeypatch):
+    # Tools run in threads; two first calls at once must not both build a boto3 client (R5-06).
+    built = []
+
+    def slow_client(*args, **kwargs):
+        built.append(1)
+        time.sleep(0.05)
+        return object()
+
+    monkeypatch.setattr(places, "_client", None)
+    monkeypatch.setattr(places.boto3, "client", slow_client)
+    gate = threading.Barrier(2)
+
+    def call():
+        gate.wait()
+        places._get_client()
+
+    threads = [threading.Thread(target=call) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(built) == 1
+
+
+def test_a_failed_search_is_logged_with_the_error_class_only(client, caplog):
+    # The failure goes through logging (not print), without the query (R5-12, adr/0016's log rule).
+    client.error = RuntimeError("secret query: コンビニ")
+    with caplog.at_level(logging.WARNING, logger="trv2.agent"):
+        places.nearby_places(kind="コンビニ", tool_context=_context(TOKYO_STATION))
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("search_nearby failed" in m and "RuntimeError" in m for m in messages)
+    assert not any("コンビニ" in m for m in messages)
