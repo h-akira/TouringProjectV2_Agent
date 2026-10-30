@@ -74,17 +74,73 @@ def test_a_session_gets_the_same_lock_each_time():
     assert locks.get("s1") is not locks.get("s2")
 
 
-def test_old_locks_are_dropped_beyond_the_bound_but_one_in_use_stays():
+def test_an_unused_old_lock_is_dropped_beyond_the_bound():
+    locks = SessionLocks(max_locks=2)
+    locks.get("s1")
+    locks.get("s2")
+    locks.get("s3")
+    assert "s1" not in locks._locks and set(locks._locks) == {"s2", "s3"}
+
+
+def test_a_lock_that_is_held_or_waited_for_is_not_dropped():
     import asyncio
 
     async def scenario():
-        locks = SessionLocks(max_locks=2)
-        held = locks.get("busy")
-        await held.acquire()
-        locks.get("s1")
+        locks = SessionLocks(max_locks=1)
+        lock = locks.get("s1")
+        order = []
+
+        async def use(name, hold):
+            async with lock:
+                order.append(name)
+                await asyncio.sleep(hold)
+
+        first = asyncio.create_task(use("first", 0.05))
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(use("second", 0.0))  # waits for the first
+        await asyncio.sleep(0.01)
         locks.get("s2")
-        locks.get("s3")
-        assert locks.get("busy") is held
-        assert len(locks._locks) <= 3  # the busy one stays even though it is the oldest
+        locks.get("s3")  # far over the bound; s1 is held and has a waiter
+        assert locks.get("s1") is lock
+        await asyncio.gather(first, second)
+        assert order == ["first", "second"]
+
+    asyncio.run(scenario())
+
+
+def test_a_lock_between_the_release_and_the_waiter_waking_is_not_dropped():
+    # locked() is False for a moment after the release although a waiter is about to take it (Agent #14).
+    import asyncio
+
+    async def scenario():
+        locks = SessionLocks(max_locks=1)
+        lock = locks.get("s1")
+        await lock.__aenter__()
+        waiter = asyncio.create_task(lock.__aenter__())
+        await asyncio.sleep(0)  # the waiter is now waiting
+        await lock.__aexit__(None, None, None)  # released; the waiter has not run yet
+        locks.get("s2")
+        assert locks.get("s1") is lock
+        await waiter
+        await lock.__aexit__(None, None, None)
+
+    asyncio.run(scenario())
+
+
+def test_a_waiter_that_is_cancelled_stops_counting():
+    import asyncio
+
+    async def scenario():
+        locks = SessionLocks(max_locks=1)
+        lock = locks.get("s1")
+        await lock.__aenter__()
+        waiter = asyncio.create_task(lock.__aenter__())
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await lock.__aexit__(None, None, None)
+        assert lock.users == 0
+        locks.get("s2")
+        assert "s1" not in locks._locks
 
     asyncio.run(scenario())

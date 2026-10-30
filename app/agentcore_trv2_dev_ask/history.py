@@ -67,22 +67,45 @@ class SessionStore:
             self._sessions.popitem(last=False)
 
 
+class SessionLock:
+    """A lock that counts the calls holding it or waiting for it, so that it is not dropped while one is on its way
+    (asyncio.Lock.locked() is False between a release and the waiter waking)."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self.users = 0
+
+    async def __aenter__(self) -> "SessionLock":
+        self.users += 1
+        try:
+            await self._lock.acquire()
+        except BaseException:
+            self.users -= 1
+            raise
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self._lock.release()
+        self.users -= 1
+
+
 class SessionLocks:
     """One lock per runtime session, so that calls on one session go one by one: each starts from the history the one
-    before it left (Agent #6, adr/0014). Bounded like the histories; a lock in use is never dropped."""
+    before it left (Agent #6, adr/0014). Bounded like the histories; a lock with a call holding or waiting for it is
+    never dropped (Agent #14)."""
 
     def __init__(self, max_locks: int = 256) -> None:
         self._max_locks = max_locks
-        self._locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+        self._locks: OrderedDict[str, SessionLock] = OrderedDict()
 
-    def get(self, session_id: str) -> asyncio.Lock:
+    def get(self, session_id: str) -> SessionLock:
         lock = self._locks.get(session_id)
         if lock is None:
-            lock = self._locks[session_id] = asyncio.Lock()
+            lock = self._locks[session_id] = SessionLock()
         self._locks.move_to_end(session_id)
         for old_id in list(self._locks):
             if len(self._locks) <= self._max_locks:
                 break
-            if not self._locks[old_id].locked() and old_id != session_id:
+            if self._locks[old_id].users == 0 and old_id != session_id:
                 del self._locks[old_id]
         return lock
