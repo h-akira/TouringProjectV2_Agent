@@ -268,3 +268,96 @@ def test_a_preface_before_a_cut_off_tool_call_is_not_the_answer():
     events = run({"prompt": "Q1"}, cut_off_deps([{"text": "ウェブで調べます。"}, {"tool": "web_search"}], sessions))
     assert events[-1]["type"] == "done" and events[-1]["answer"] == LIMIT_ANSWER
     assert sessions.get("s1") == [user("Q1"), assistant(LIMIT_ANSWER)]
+
+
+# Slice 6 plan 3 (adr/0014): a call is cut at the deadline the Backend sends, and calls on one session go one by one.
+class SlowAgent(FakeAgent):
+    def __init__(self, messages, final_text, delay):
+        super().__init__(messages, [], final_text)
+        self.delay = delay
+
+    async def stream_async(self, prompt, invocation_state=None, limits=None):
+        self.calls.append({"prompt": prompt})
+        self.messages.append(user(prompt))
+        await asyncio.sleep(self.delay)
+        self.messages.append(assistant(self._final_text))
+        yield {"result": make_result(self._final_text)}
+
+
+def test_a_call_past_its_deadline_is_a_timeout_and_keeps_no_history():
+    sessions = SessionStore()
+    sessions.put("s1", [user("Q0"), assistant("A0")])
+    deps, _ = make_deps(agent=SlowAgent([user("Q0"), assistant("A0")], "late", delay=5), sessions=sessions)
+    events = run({"prompt": "Q1", "deadlineSeconds": 0.05}, deps)
+    assert events == [{"type": "error", "code": "timeout", "message": "deadline passed"}]
+    assert sessions.get("s1") == [user("Q0"), assistant("A0")]
+
+
+def test_without_a_deadline_the_default_applies():
+    deps, _ = make_deps(agent=SlowAgent([], "late", delay=5))
+    deps.settings = load_settings({"AGENT_DEFAULT_DEADLINE_SECONDS": "0.05"})
+    assert run({"prompt": "Q1"}, deps)[-1]["code"] == "timeout"
+
+
+def test_a_deadline_that_is_not_a_sensible_number_is_ignored():
+    for bad in ("soon", None, True, 0, -3, 100000):
+        deps, _ = make_deps(agent=SlowAgent([], "late", delay=5))
+        deps.settings = load_settings({"AGENT_DEFAULT_DEADLINE_SECONDS": "0.05"})
+        assert run({"prompt": "Q1", "deadlineSeconds": bad}, deps)[-1]["code"] == "timeout", bad
+
+
+def test_a_call_within_its_deadline_is_not_cut():
+    deps, _ = make_deps(agent=SlowAgent([], "ok", delay=0.01))
+    events = run({"prompt": "Q1", "deadlineSeconds": 5}, deps)
+    assert events[-1]["type"] == "done" and events[-1]["answer"] == "ok"
+
+
+def test_calls_on_one_session_go_one_by_one_and_keep_both_turns():
+    sessions = SessionStore()
+    first = SlowAgent([], "A1", delay=0.2)
+    second = SlowAgent([], "A2", delay=0.0)
+    seen = []
+
+    def factory(model_id, messages):
+        agent = first if not seen else second
+        seen.append(list(messages))
+        agent.messages = list(messages)
+        return agent
+
+    deps, _ = make_deps(sessions=sessions)
+    deps.agent_factory = factory
+
+    async def both():
+        async def one(prompt):
+            return [event async for event in handle({"prompt": prompt, "deadlineSeconds": 5}, "s1", deps)]
+
+        slow = asyncio.create_task(one("Q1"))
+        await asyncio.sleep(0.05)  # the first call is in the middle of its work
+        fast = asyncio.create_task(one("Q2"))
+        return await asyncio.gather(slow, fast)
+
+    asyncio.run(both())
+    # The second call starts from the history that already holds the first one's turn.
+    assert seen == [[], [user("Q1"), assistant("A1")]]
+    assert sessions.get("s1") == [user("Q1"), assistant("A1"), user("Q2"), assistant("A2")]
+
+
+def test_the_wait_for_a_busy_session_counts_against_the_deadline():
+    sessions = SessionStore()
+    busy = SlowAgent([], "A1", delay=0.3)
+    other = SlowAgent([], "A2", delay=0.0)
+    deps, _ = make_deps(agent=busy, sessions=sessions)
+    deps.agent_factory = lambda model_id, messages: busy if not busy.calls else other
+
+    async def both():
+        async def one(payload):
+            return [event async for event in handle(payload, "s1", deps)]
+
+        slow = asyncio.create_task(one({"prompt": "Q1", "deadlineSeconds": 5}))
+        await asyncio.sleep(0.05)
+        impatient = await one({"prompt": "Q2", "deadlineSeconds": 0.05})
+        return impatient, await slow
+
+    impatient, slow = asyncio.run(both())
+    assert impatient == [{"type": "error", "code": "timeout", "message": "deadline passed"}]
+    assert other.calls == [] and slow[-1]["type"] == "done"
