@@ -14,12 +14,20 @@ import uuid
 import boto3
 
 TOKYO_STATION = {"latitude": 35.6812, "longitude": 139.7671, "headingDegrees": 0.0}
-FACTS = "現在日時: 2026-10-16 12:00（日本時間）\n現在地: 東京都千代田区丸の内（緯度35.6812 経度139.7671）\n進行方位: 北（右手は東、左手は西）\n"
+# The facts block as the Backend builds it (Backend/src/lib/prompt.py build_prompt), for a rider at Tokyo Station
+# heading north.
+FACTS = "\n".join([
+    "現在日時: 2026年10月16日（金）12時00分（日本時間）",
+    "現在地: 緯度 35.68120, 経度 139.76710",
+    "現在地の住所: 東京都千代田区丸の内（確定した事実。座標から推測し直さないこと）",
+    "進行方向: 北（真北から0度）",
+    "ライダーから見て右手は東、左手は西の方角",
+])
 MARKDOWN = re.compile(r"[*#`]|^\s*[-・]\s", re.MULTILINE)
 
 
 def invoke(client, arn: str, session_id: str, question: str, location: dict | None, deadline: float | None = None) -> list[dict]:
-    payload = {"prompt": FACTS + "質問: " + question, "location": location}
+    payload = {"prompt": f"{FACTS}\n\n質問: {question}", "location": location}
     if deadline is not None:
         payload["deadlineSeconds"] = deadline
     response = client.invoke_agent_runtime(
@@ -39,7 +47,7 @@ def check(name: str, events: list[dict], expect_tool: str | None) -> bool:
     errors = [e for e in events if e.get("type") == "error"]
     ok = done is not None and not errors and bool(done["answer"]) and not MARKDOWN.search(done["answer"])
     if expect_tool is not None:
-        ok = ok and any(expect_tool in tool for tool in tools)
+        ok = ok and any(re.search(expect_tool, tool) for tool in tools)
     print(f"[{'OK' if ok else 'NG'}] {name}: tools={tools} usage={done and done['usage']} model={done and done['modelId']}")
     print(f"      answer={done and done['answer']} errors={errors}")
     return ok
@@ -93,7 +101,7 @@ def main() -> int:
     results = [
         check("知識だけで答える", invoke(client, arn, session, "富士山の高さは？", TOKYO_STATION), None),
         check("周辺検索", invoke(client, arn, session, "近くのコンビニはどこ？", TOKYO_STATION), "nearby_places"),
-        check("Web 検索", invoke(client, arn, session, "今日の東京の天気は？", TOKYO_STATION), "earch"),
+        check("Web 検索", invoke(client, arn, session, "今日の東京の天気は？", TOKYO_STATION), r"___.*earch"),
         check("会話の続き", invoke(client, arn, session, "さっきのコンビニまでの距離をもう一度教えて", TOKYO_STATION), None),
         check("現在地なし", invoke(client, arn, f"smoke-{uuid.uuid4()}", "右手に見える公園は？", None), None),
         check_timeout(client, arn),
