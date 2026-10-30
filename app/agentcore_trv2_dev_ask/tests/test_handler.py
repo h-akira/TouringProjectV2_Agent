@@ -365,20 +365,33 @@ def test_the_wait_for_a_busy_session_counts_against_the_deadline():
 
 
 def test_closing_the_stream_midway_raises_nothing_and_keeps_no_history():
-    # The client goes away after the first text: no exception, no history for the cut turn (R5-09).
+    # The client goes away after the first text: no exception, no history for the cut turn (R5-09),
+    # and the session is free again for the next call.
     sessions = SessionStore()
     sessions.put("s1", [user("Q0"), assistant("A0")])
-    agent = FakeAgent([user("Q0"), assistant("A0")], [{"data": "愛"}, {"data": "鷹"}], "愛鷹")
-    deps, _ = make_deps(agent=agent, sessions=sessions)
+    cut = FakeAgent([user("Q0"), assistant("A0")], [{"data": "愛"}, {"data": "鷹"}], "愛鷹")
+    fast = SlowAgent([user("Q0"), assistant("A0")], "ok", delay=0.0)
+    deps, _ = make_deps(agent=cut, sessions=sessions)
+    factory_calls: list[int] = []
+
+    def factory(model_id, messages):
+        factory_calls.append(1)
+        return cut if len(factory_calls) == 1 else fast
+
+    deps.agent_factory = factory
 
     async def go():
         stream = handle({"prompt": "Q1"}, "s1", deps)
         first = await stream.__anext__()
         await stream.aclose()
-        return first
+        # The lock is released by aclose itself, not by the loop's shutdown: this call must not wait.
+        again = [event async for event in handle({"prompt": "Q2", "deadlineSeconds": 5}, "s1", deps)]
+        return first, again
 
-    assert asyncio.run(go()) == {"type": "text", "text": "愛"}
-    assert sessions.get("s1") == [user("Q0"), assistant("A0")]
+    first, again = asyncio.run(go())
+    assert first == {"type": "text", "text": "愛"}
+    assert again[-1]["type"] == "done" and again[-1]["answer"] == "ok"
+    assert sessions.get("s1") == [user("Q0"), assistant("A0"), user("Q2"), assistant("ok")]
 
 
 def test_a_cancelled_call_keeps_no_history_and_lets_go_of_the_session():
@@ -387,7 +400,13 @@ def test_a_cancelled_call_keeps_no_history_and_lets_go_of_the_session():
     slow = SlowAgent([user("Q0"), assistant("A0")], "late", delay=5)
     fast = SlowAgent([user("Q0"), assistant("A0")], "ok", delay=0.0)
     deps, _ = make_deps(agent=slow, sessions=sessions)
-    deps.agent_factory = lambda model_id, messages: slow if not slow.calls else fast
+    factory_calls: list[int] = []
+
+    def factory(model_id, messages):
+        factory_calls.append(1)
+        return slow if len(factory_calls) == 1 else fast
+
+    deps.agent_factory = factory
 
     async def go():
         async def drain():
